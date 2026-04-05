@@ -66,13 +66,36 @@ def run_sync():
             print(f"Hittade {len(news_list)} råa nyhetsobjekt. Bearbetar...")
             
             for news in news_list[:5]:
+                if news is None:
+                    print("Skippar: Hittade ett tomt nyhetsobjekt.")
+                    continue
+
+                if not isinstance(news, dict):
+                    continue
                 # 1. Packa upp 'content' om det finns (Yahoos nya format)
                 details = news.get('content', news) 
+
+                if details is None:
+                    continue
             
                 # 2. Hämta fälten från 'details' istället
                 title = details.get('title')
-                link = details.get('clickThroughUrl', {}).get('url') or details.get('canonicalUrl', {}).get('url')
-                publisher = details.get('provider', {}).get('displayName', 'Okänd källa')
+
+                # 3. Hämta länken SÄKERT (Här var felet tidigare)
+                click_url = details.get('clickThroughUrl')
+                canon_url = details.get('canonicalUrl')
+                link = None
+                if isinstance(click_url, dict):
+                    link = click_url.get('url')
+                if not link and isinstance(canon_url, dict):
+                    link = canon_url.get('url')
+
+                # 4. Hämta utgivaren SÄKERT
+                provider = details.get('provider')
+                publisher = 'Okänd källa'
+                if isinstance(provider, dict):
+                    publisher = provider.get('displayName', 'Okänd källa')    
+
             
             # DEBUG: Se vad vi hittar nu
                 if not title or not link:
