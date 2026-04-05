@@ -4,10 +4,18 @@ import yfinance as yf
 from supabase import create_client, Client
 
 # --- KONFIGURATION ---
-SUPABASE_URL = os.environ.get("https://qsqgadawxuqavcwinfjj.supabase.co")
-SUPABASE_KEY = os.environ.get(".          ") # Viktigt: service_role
-HF_API_URL = "https://huggingface.co/spaces/sjo131188/min-aktie-analys/analyze"
+# 1. Supabase URL
+# Först letar vi efter miljövariabeln "SUPABASE_URL". Om den inte finns, används din länk.
+SUPABASE_URL = os.environ.get("SUPABASE_URL")
 
+# 2. Supabase Service Key
+# Här letar vi efter "SUPABASE_SERVICE_ROLE_KEY". Om den inte finns, används din nyckel.
+# (Klistra in din riktiga långa nyckel mellan de sista citattechnerna)
+SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
+
+# 3. Hugging Face API
+# Denna URL är fast och pekar direkt på din AI-motor.
+HF_API_URL = "https://sjo131188-min-aktie-analys.hf.space/analyze"
 # Initiera Supabase-klienten
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
