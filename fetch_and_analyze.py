@@ -1,7 +1,13 @@
+print("--- SKRIPTET HAR STARTAT ---")
+
 import os
 import requests
 import yfinance as yf
 from supabase import create_client, Client
+from dotenv import load_dotenv  # <--- LÄGG TILL DENNA RAD
+
+# Ladda in variabler från .env-filen
+load_dotenv() # <--- LÄGG TILL DENNA RAD
 
 # --- KONFIGURATION ---
 # 1. Supabase URL
@@ -37,45 +43,72 @@ def analyze_text(text):
     return None
 
 def run_sync():
-    print("Startar hämtning av nyheter...")
+    print("--- Startar synkronisering ---")
     tickers = get_portfolio_tickers()
+    print(f"Hittade tickers i databasen: {tickers}")
     
     if not tickers:
-        print("Inga aktier hittades i databasen.")
+        print("Inga aktier att bearbeta. Avslutar.")
         return
 
     for ticker in tickers:
-        print(f"Bearbetar {ticker}...")
+        print(f"\nHämtar data för: {ticker}...")
         stock = yf.Ticker(ticker)
-        news_list = stock.news
         
-        for news in news_list[:5]: # De 5 senaste nyheterna per aktie
-            title = news.get('title')
-            link = news.get('link')
-            publisher = news.get('publisher')
-            
-            # 1. Kolla om nyheten redan finns (undvik dubbletter)
-            exists = supabase.table("news_items").select("id").eq("url", link).execute()
-            if exists.data:
+        try:
+            news_list = stock.news
+            if not news_list:
+                print(f"Inga nyheter hittades för {ticker} just nu.")
                 continue
             
-            # 2. Analysera med FinBERT
-            analysis = analyze_text(title)
-            sentiment = analysis['sentiment'] if analysis else "neutral"
-            score = analysis['confidence'] if analysis else 0.0
+            print(f"Hittade {len(news_list)} råa nyhetsobjekt. Bearbetar...")
             
-            # 3. Spara i news_items
-            data = {
-                "title": title,
-                "url": link,
-                "source": publisher,
-                "sentiment": sentiment,
-                "sentiment_score": score,
-                "matched_symbols": [ticker]
-            }
+            for news in news_list[:5]:
+                # 1. Packa upp 'content' om det finns (Yahoos nya format)
+                details = news.get('content', news) 
             
-            result = supabase.table("news_items").insert(data).execute()
-            print(f"Sparad nyhet: {title} [{sentiment}]")
+                # 2. Hämta fälten från 'details' istället
+                title = details.get('title')
+                link = details.get('clickThroughUrl', {}).get('url') or details.get('canonicalUrl', {}).get('url')
+                publisher = details.get('provider', {}).get('displayName', 'Okänd källa')
+            
+            # DEBUG: Se vad vi hittar nu
+                if not title or not link:
+                    print(f"Skippar: Saknar titel eller länk. (Titel: {title})")
+                    continue
+            
+                # 3. Kolla dubbletter i Supabase
+                exists = supabase.table("news_items").select("id").eq("url", link).execute()
+                if exists.data:
+                    print(f"Redan sparad: {title[:40]}...")
+                    continue
+            
+                print(f"Analyserar sentiment för: {title[:50]}...")
+            
+                # 4. Analysera med din AI
+                analysis = analyze_text(title)
+                sentiment = analysis['sentiment'] if analysis else "neutral"
+                score = analysis['confidence'] if analysis else 0.0
+            
+                # 5. Spara i Supabase
+                data = {
+                    "title": title,
+                    "url": link,
+                    "source": publisher,
+                    "sentiment": sentiment,
+                    "sentiment_score": score,
+                    "matched_symbols": [ticker]
+                }
+            
+                try:
+                    supabase.table("news_items").insert(data).execute()
+                    print(f"✅ SPARAD: [{sentiment}] {title[:30]}...")
+                except Exception as e:
+                    print(f"❌ Kunde inte spara: {e}")
 
+        except Exception as e:
+            print(f"❌ Fel vid bearbetning av {ticker}: {e}")
+
+    print("\n--- Synkronisering klar! ---")
 if __name__ == "__main__":
     run_sync()
