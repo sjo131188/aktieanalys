@@ -4,10 +4,12 @@ import os
 import requests
 import yfinance as yf
 from supabase import create_client, Client
-from dotenv import load_dotenv  # <--- LÄGG TILL DENNA RAD
 
-# Ladda in variabler från .env-filen
-load_dotenv() # <--- LÄGG TILL DENNA RAD
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    print("DEBUG: python-dotenv ej installerad, använder systemets miljövariabler.")
 
 # --- KONFIGURATION ---
 # 1. Supabase URL
