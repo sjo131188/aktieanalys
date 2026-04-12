@@ -21,9 +21,7 @@ SUPABASE_URL = os.environ.get("SUPABASE_URL")
 # (Klistra in din riktiga långa nyckel mellan de sista citattechnerna)
 SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
 
-# 3. Hugging Face API
-# Denna URL är fast och pekar direkt på din AI-motor.
-HF_API_URL = "https://sjo131188-min-aktie-analys.hf.space/analyze"
+
 # Initiera Supabase-klienten
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
@@ -33,107 +31,120 @@ def get_portfolio_tickers():
     # Skapa ett set av unika tickers för att slippa dubbla anrop
     return list(set([item['ticker'] for item in response.data]))
 
+import requests
+
+HF_TOKEN = os.getenv("HF_TOKEN")
+# Den nya adressen som Hugging Face kräver:
+API_URL = "https://router.huggingface.co/hf-inference/models/ProsusAI/finbert"
+headers = {"Authorization": f"Bearer {HF_TOKEN}"}
+
 def analyze_text(text):
-    """Skickar text till din Hugging Face Space för FinBERT-analys."""
+    if not HF_TOKEN:
+        print("❌ FEL: HF_TOKEN saknas i miljön!")
+        return None
+        
     try:
-        # Väck HF Space om den sover (timeout=30)
-        response = requests.post(HF_API_URL, json={"text": text}, timeout=30)
+        response = requests.post(API_URL, headers=headers, json={"inputs": text}, timeout=20)
+        
+        # Om modellen håller på att laddas, vänta och försök igen en gång
+        if response.status_code == 503:
+            print("⏳ Modellen laddas på Hugging Face, väntar 10 sekunder...")
+            import time
+            time.sleep(10)
+            response = requests.post(API_URL, headers=headers, json={"inputs": text}, timeout=20)
+
         if response.status_code == 200:
-            return response.json()
+            raw_result = response.json()
+            # API:et returnerar ibland [[{...}]]
+            if isinstance(raw_result, list) and len(raw_result) > 0:
+                inner = raw_result[0]
+                result = inner[0] if isinstance(inner, list) else inner
+                return {
+                    "sentiment": result['label'],
+                    "confidence": result['score']
+                }
+        else:
+            print(f"❌ API-fel: {response.status_code} - {response.text}")
+            
     except Exception as e:
-        print(f"AI-Analys misslyckades: {e}")
+        print(f"❌ Systemfel vid analys: {e}")
     return None
 
 def run_sync():
     print("--- Startar synkronisering ---")
     tickers = get_portfolio_tickers()
-    print(f"Hittade tickers i databasen: {tickers}")
+    print(f"Hittade tickers: {tickers}")
     
-    if not tickers:
-        print("Inga aktier att bearbeta. Avslutar.")
-        return
-
     for ticker in tickers:
-        print(f"\nHämtar data för: {ticker}...")
-        stock = yf.Ticker(ticker)
-        
         try:
+            print(f"\n--- Bearbetar {ticker} ---")
+            stock = yf.Ticker(ticker)
             news_list = stock.news
+            
             if not news_list:
-                print(f"Inga nyheter hittades för {ticker} just nu.")
+                print(f"⚠️ Inga nyheter alls hittades för {ticker} via Yahoo Finance.")
                 continue
+
+            # Nollställ statistik för varje ny aktie
+            stats = {"positive": 0, "negative": 0, "neutral": 0}
+            processed_count = 0
             
-            print(f"Hittade {len(news_list)} råa nyhetsobjekt. Bearbetar...")
-            
+            print(f"Hittade {len(news_list)} råa nyheter. Analyserar de 5 senaste...")
+
             for news in news_list[:5]:
-                if news is None:
-                    print("Skippar: Hittade ett tomt nyhetsobjekt.")
-                    continue
-
-                if not isinstance(news, dict):
-                    continue
-                # 1. Packa upp 'content' om det finns (Yahoos nya format)
-                details = news.get('content', news) 
-
-                if details is None:
-                    continue
-            
-                # 2. Hämta fälten från 'details' istället
+                details = news.get('content', news)
                 title = details.get('title')
+                
+                # Säkra länken
+                link_obj = details.get('clickThroughUrl') or details.get('canonicalUrl') or {}
+                link = link_obj.get('url') if isinstance(link_obj, dict) else None
 
-                # 3. Hämta länken SÄKERT (Här var felet tidigare)
-                click_url = details.get('clickThroughUrl')
-                canon_url = details.get('canonicalUrl')
-                link = None
-                if isinstance(click_url, dict):
-                    link = click_url.get('url')
-                if not link and isinstance(canon_url, dict):
-                    link = canon_url.get('url')
-
-                # 4. Hämta utgivaren SÄKERT
-                provider = details.get('provider')
-                publisher = 'Okänd källa'
-                if isinstance(provider, dict):
-                    publisher = provider.get('displayName', 'Okänd källa')    
-
-            
-            # DEBUG: Se vad vi hittar nu
                 if not title or not link:
-                    print(f"Skippar: Saknar titel eller länk. (Titel: {title})")
                     continue
-            
-                # 3. Kolla dubbletter i Supabase
+
+                # KOLLA SUPABASE
                 exists = supabase.table("news_items").select("id").eq("url", link).execute()
+                
                 if exists.data:
-                    print(f"Redan sparad: {title[:40]}...")
+                    print(f"  - Redan sparad: {title[:40]}...")
+                    # VALFRITT: Om du vill räkna statistik även på gamla, gör det här
                     continue
-            
-                print(f"Analyserar sentiment för: {title[:50]}...")
-            
-                # 4. Analysera med din AI
+
+                # ANALYSERA NYA
+                print(f"  - Analyserar ny artikel: {title[:40]}...")
                 analysis = analyze_text(title)
-                sentiment = analysis['sentiment'] if analysis else "neutral"
-                score = analysis['confidence'] if analysis else 0.0
-            
-                # 5. Spara i Supabase
-                data = {
-                    "title": title,
-                    "url": link,
-                    "source": publisher,
-                    "sentiment": sentiment,
-                    "sentiment_score": score,
-                    "matched_symbols": [ticker]
-                }
-            
-                try:
+                
+                if analysis:
+                    sentiment = analysis['sentiment'].lower()
+                    score = analysis['confidence']
+                    stats[sentiment] += 1
+                    processed_count += 1
+                    
+                    # Spara i databasen
+                    data = {
+                        "title": title, "url": link, "sentiment": sentiment,
+                        "sentiment_score": score, "matched_symbols": [ticker]
+                    }
                     supabase.table("news_items").insert(data).execute()
-                    print(f"✅ SPARAD: [{sentiment}] {title[:30]}...")
-                except Exception as e:
-                    print(f"❌ Kunde inte spara: {e}")
+
+            # --- SAMMANFATTNING ---
+            # Denna print MÅSTE ligga kvar i ticker-loopen men utanför news-loopen
+            if processed_count > 0:
+                print(f"\n📊 RESULTAT FÖR {ticker}:")
+                print(f"   Antal analyserade nu: {processed_count}")
+                print(f"   Positiva: {stats['positive']} | Negativa: {stats['negative']} | Neutrala: {stats['neutral']}")
+                
+                if stats['positive'] > stats['negative']:
+                    print(f"   🚀 Bedömning: BULLISH")
+                elif stats['negative'] > stats['positive']:
+                    print(f"   ⚠️ Bedömning: BEARISH")
+                else:
+                    print(f"   ⚖️ Bedömning: NEUTRAL")
+            else:
+                print(f"   ℹ️ Inga nya unika nyheter sparades för {ticker} i denna körning.")
 
         except Exception as e:
             print(f"❌ Fel vid bearbetning av {ticker}: {e}")
 
     print("\n--- Synkronisering klar! ---")
-if __name__ == "__main__":
-    run_sync()
+run_sync()
